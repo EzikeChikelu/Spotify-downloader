@@ -3,6 +3,10 @@ const REDIRECT_KEY = "spool-spotify-redirect";
 const TOKEN_KEY = "spool-spotify-token";
 const $ = (id) => document.getElementById(id);
 const state = { token: null, playlists: [], selected: null, tracks: [], audio: [], view: "playlists" };
+const AUDIO_DB = "spool-local-audio";
+function openAudioDB(){return new Promise((resolve,reject)=>{const request=indexedDB.open(AUDIO_DB,1);request.onupgradeneeded=()=>request.result.createObjectStore("files",{keyPath:"id"});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
+async function audioDB(action,value){const db=await openAudioDB();return new Promise((resolve,reject)=>{const tx=db.transaction("files",action==="getAll"?"readonly":"readwrite");const store=tx.objectStore("files");const request=action==="getAll"?store.getAll():action==="put"?store.put(value):store.delete(value);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);tx.oncomplete=()=>db.close();tx.onerror=()=>{db.close();reject(tx.error);};});}
+async function restoreAudio(){try{state.audio=await audioDB("getAll");$("audioCount").textContent=state.audio.length;renderAudio();}catch(err){console.warn("Local audio storage unavailable",err);}}
 const toast = (message) => { const el=$("toast"); el.textContent=message; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),2600); };
 const escapeHTML = (value="") => String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const spotifyId = (value) => { const match=String(value).match(/(?:playlist\/|spotify:playlist:)([a-zA-Z0-9]+)/); return match?match[1]:null; };
@@ -67,14 +71,37 @@ function exportCSV(){const rows=[["Track","Artist","Album","Duration","Spotify U
 function exportJSON(){downloadBlob(JSON.stringify({playlist:state.selected?.name,exportedAt:new Date().toISOString(),tracks:state.tracks.map(t=>({title:t.name,artists:t.artists?.map(a=>a.name),album:t.album?.name,durationMs:t.duration_ms,url:t.external_urls?.spotify}))},null,2),safeName(state.selected?.name)+".json","application/json");}
 function exportM3U(){const lines=["#EXTM3U",...state.tracks.flatMap(t=>["#EXTINF:"+Math.floor((t.duration_ms||0)/1000)+","+(t.artists?.map(a=>a.name).join(", ")||"")+" - "+t.name,t.external_urls?.spotify||""])];downloadBlob(lines.join("\n"),safeName(state.selected?.name)+".m3u","audio/x-mpegurl");}
 function switchView(view){state.view=view;document.querySelectorAll(".side-link").forEach(b=>b.classList.toggle("active",b.dataset.view===view));$("playlistView").classList.toggle("hidden",view!=="playlists");$("connectState").classList.toggle("hidden",view!=="playlists"||!!state.token);$("audioView").classList.toggle("hidden",view!=="audio");$("panelTitle").textContent=view==="playlists"?"Spotify playlists":"My audio files";$("panelSubtitle").textContent=view==="playlists"?(state.token?"Your connected library":"Connect your account to get started"):"Audio saved on this device";if(view==="audio")renderAudio();}
-function addAudio(files){for(const file of files){if(!file.type.startsWith("audio/"))continue;state.audio.push({file,id:crypto.randomUUID()});} $("audioCount").textContent=state.audio.length;renderAudio();if(files.length)toast("Audio added to your local library.");}
-function renderAudio(){$("audioList").innerHTML=state.audio.map(item=>`<div class="audio-item"><span class="audio-icon">♫</span><div class="audio-info"><b>${escapeHTML(item.file.name)}</b><small>${(item.file.size/1048576).toFixed(1)} MB · On this device</small></div><button class="download-btn" data-download="${item.id}">↓ Save</button></div>`).join("")||"";document.querySelectorAll("[data-download]").forEach(btn=>btn.addEventListener("click",()=>{const item=state.audio.find(x=>x.id===btn.dataset.download);if(item){const url=URL.createObjectURL(item.file),a=document.createElement("a");a.href=url;a.download=item.file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}}));}
+async function addAudio(files){
+ let added=0;
+ for(const file of files){
+  if(!file.type.startsWith("audio/"))continue;
+  const item={id:crypto.randomUUID(),name:file.name,type:file.type,size:file.size,file:file};
+  try{await audioDB("put",item);state.audio.push(item);added++;}
+  catch(err){toast("Could not save file. Device storage may be full.");break;}
+ }
+ $("audioCount").textContent=state.audio.length;renderAudio();
+ if(added)toast(added+" audio file(s) saved on this device.");
+}
+function renderAudio(){
+ const list=$("audioList");list.innerHTML="";
+ if(!state.audio.length){const empty=document.createElement("p");empty.className="empty-note";empty.textContent="Your personal audio library is empty.";list.appendChild(empty);return;}
+ state.audio.forEach(item=>{
+  const row=document.createElement("div");row.className="audio-item";
+  const icon=document.createElement("span");icon.className="audio-icon";icon.textContent="♫";row.appendChild(icon);
+  const info=document.createElement("div");info.className="audio-info";
+  const name=document.createElement("b");name.textContent=item.name;info.appendChild(name);
+  const meta=document.createElement("small");meta.textContent=(item.size/1048576).toFixed(1)+" MB · Saved in this browser";info.appendChild(meta);row.appendChild(info);
+  const save=document.createElement("button");save.className="download-btn";save.textContent="↓ Save";save.addEventListener("click",()=>{const url=URL.createObjectURL(item.file),a=document.createElement("a");a.href=url;a.download=item.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);});row.appendChild(save);
+  const remove=document.createElement("button");remove.className="download-btn";remove.textContent="×";remove.setAttribute("aria-label","Remove "+item.name);remove.addEventListener("click",async()=>{await audioDB("delete",item.id);state.audio=state.audio.filter(x=>x.id!==item.id);$("audioCount").textContent=state.audio.length;renderAudio();toast("Audio removed from this browser.");});row.appendChild(remove);
+  list.appendChild(row);
+ });
+}
 $("connectTop").addEventListener("click",connectSpotify);$("connectHero").addEventListener("click",connectSpotify);$("connectPanel").addEventListener("click",connectSpotify);
 $("refreshBtn").addEventListener("click",()=>state.token?loadPlaylists():connectSpotify());
 $("themeToggle").addEventListener("click",()=>{document.body.classList.toggle("light");localStorage.setItem("spool-theme",document.body.classList.contains("light")?"light":"dark");});
 document.querySelectorAll(".side-link").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 $("csvBtn").addEventListener("click",exportCSV);$("jsonBtn").addEventListener("click",exportJSON);$("m3uBtn").addEventListener("click",exportM3U);
-$("audioInput").addEventListener("change",e=>addAudio([...e.target.files]));
+$("audioInput").addEventListener("change",e=>{addAudio([...e.target.files]);e.target.value="";});
 const drop=$("dropZone");["dragenter","dragover"].forEach(evt=>drop.addEventListener(evt,e=>{e.preventDefault();drop.style.borderColor="var(--green)";}));["dragleave","drop"].forEach(evt=>drop.addEventListener(evt,e=>{e.preventDefault();drop.style.borderColor="";if(evt==="drop")addAudio([...e.dataTransfer.files]);}));
 if(localStorage.getItem("spool-theme")==="light")document.body.classList.add("light");
-(async()=>{const saved=sessionStorage.getItem(TOKEN_KEY);if(saved){state.token=saved;await loadPlaylists();}await handleCallback();})();
+(async()=>{await restoreAudio();const saved=sessionStorage.getItem(TOKEN_KEY);if(saved){state.token=saved;await loadPlaylists();}await handleCallback();})();
