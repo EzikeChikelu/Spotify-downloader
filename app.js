@@ -10,9 +10,59 @@ function saveBlob(blob,name){const u=URL.createObjectURL(blob),a=document.create
 function switchTool(name){document.querySelectorAll(".tool-tab").forEach(b=>b.classList.toggle("active",b.dataset.tool===name));["links","extract","library"].forEach(k=>$(k+"Panel").classList.toggle("hidden",k!==name))}
 document.querySelectorAll(".tool-tab").forEach(b=>b.addEventListener("click",()=>switchTool(b.dataset.tool)));
 $("themeToggle").onclick=()=>{document.body.classList.toggle("light");localStorage.setItem("spool-theme",document.body.classList.contains("light")?"light":"dark")};
-function sourceName(url){const h=new URL(url).hostname.replace(/^www\./,"");if(h.includes("tiktok"))return"TikTok";if(h.includes("instagram"))return"Instagram";if(h.includes("facebook")||h==="fb.watch")return"Facebook";if(h==="x.com"||h==="twitter.com")return"X";return h}
+function platformFor(url){
+ const h=new URL(url).hostname.toLowerCase().replace(/^www\./,"");
+ if(h==="tiktok.com"||h.endsWith(".tiktok.com"))return "TikTok";
+ if(h==="instagram.com"||h.endsWith(".instagram.com"))return "Instagram";
+ if(h==="x.com"||h.endsWith(".x.com")||h==="twitter.com"||h.endsWith(".twitter.com"))return "X";
+ if(/\.(mp4|m4v|webm|mov|mp3|m4a|wav|ogg|aac|jpg|jpeg|png|gif|webp)$/i.test(new URL(url).pathname))return "Direct";
+ return null;
+}
 function directMedia(url){return /\.(mp4|m4v|webm|mov|mp3|m4a|wav|ogg|aac|jpg|jpeg|png|gif|webp)(?:$|[?#])/i.test(new URL(url).pathname+new URL(url).search)}
-$("linkForm").onsubmit=async e=>{e.preventDefault();const raw=$("mediaUrl").value.trim(),box=$("linkResult");let u;try{u=new URL(raw);if(!["http:","https:"].includes(u.protocol))throw 0}catch{box.classList.remove("hidden");box.innerHTML="<strong>That link doesn’t look right.</strong>Please paste a full https:// or http:// link.";return}const host=sourceName(u.href);box.classList.remove("hidden");if(!directMedia(u.href)){box.innerHTML="<strong>"+esc(host)+" link detected</strong>This is a social post/page link, not a direct media file. Spool cannot reliably fetch media from this platform page or bypass its download restrictions. Use the platform’s own Save/Download or sharing feature where available, then import the saved file into Spool.<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open original post ↗</a>";return}box.innerHTML="<strong>Direct media link detected</strong>Trying to retrieve the file from its host…";try{const r=await fetch(u.href,{mode:"cors"});if(!r.ok)throw Error("Host returned "+r.status);const blob=await r.blob();if(!blob.type.startsWith("image/")&&!blob.type.startsWith("video/")&&!blob.type.startsWith("audio/"))throw Error("Not a recognized media file");const ext=(u.pathname.split(".").pop()||"media").split("?")[0];saveBlob(blob,"spool-download."+ext);box.innerHTML="<strong>Your download is ready.</strong>The media file was retrieved from the direct link.";toast("Download started.")}catch(err){box.innerHTML="<strong>The host blocked browser downloading.</strong>This link may require permission or may not allow cross-origin file access. Open the original source and use its download option if available.<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open media link ↗</a>";}};
+function safeMediaUrl(value){try{const u=new URL(value);return ["http:","https:"].includes(u.protocol)?u.href:null}catch{return null}}
+function renderSocialMedia(payload,platform,originalUrl){
+ const d=payload?.data||payload?.result?.data||payload?.data?.data;
+ if(!d)throw new Error(payload?.msg||payload?.message||"The service returned no media for this post.");
+ const videos=Array.isArray(d.videos)?d.videos:[];
+ const images=Array.isArray(d.images)?d.images:[];
+ const audios=Array.isArray(d.audios)?d.audios:[];
+ const title=esc(d.title||platform+" post");
+ const thumb=safeMediaUrl(d.thumbnail);
+ const candidates=[...videos.map((v,n)=>({kind:"Video",url:safeMediaUrl(v.url),quality:v.quality||v.mimeType||"Video",mime:v.mimeType||"",n})),...audios.map((v,n)=>({kind:"Audio",url:safeMediaUrl(v.url),quality:v.quality||v.mimeType||"Audio",mime:v.mimeType||"",n})),...images.map((v,n)=>({kind:"Image",url:safeMediaUrl(v.url),quality:(v.width&&v.height)?v.width+" × "+v.height:"Image",mime:"",n}))].filter(x=>x.url);
+ if(!candidates.length)throw new Error("The post was found, but the service did not return a downloadable media file. It may be private, restricted, or unsupported.");
+ const preview=thumb?'<img class="social-thumb" src="'+esc(thumb)+'" alt="" loading="lazy">':"";
+ const options=candidates.map((m,n)=>'<a class="media-option" href="'+esc(m.url)+'" target="_blank" rel="noopener noreferrer" aria-label="Open '+esc(m.kind)+' '+esc(m.quality)+'"><span class="media-kind">'+esc(m.kind)+'</span><span class="media-quality">'+esc(m.quality)+'</span><span class="media-download">Open / save ↗</span></a>').join("");
+ $("linkResult").innerHTML='<div class="social-result-head">'+preview+'<div><span class="result-platform">'+esc(platform)+' · PUBLIC POST</span><strong>'+title+'</strong><small>'+(Number(d.duration)>0?"Duration "+fmt(d.duration):candidates.length+" media option(s)")+'</small></div></div><div class="media-options">'+options+'</div><p class="media-hint">Choose a media option. It opens the source file in a new tab; use your browser’s download or Save option to store it on your phone. Links may expire. Only save content you have permission to use.</p><a class="original-post" href="'+esc(originalUrl)+'" target="_blank" rel="noopener noreferrer">Open original post ↗</a>';
+}
+$("linkForm").onsubmit=async e=>{
+ e.preventDefault();
+ const raw=$("mediaUrl").value.trim(),box=$("linkResult");let u;
+ try{u=new URL(raw);if(!["http:","https:"].includes(u.protocol))throw 0}catch{box.classList.remove("hidden");box.innerHTML="<strong>That link doesn’t look right.</strong>Please paste a full https:// or http:// link.";return}
+ box.classList.remove("hidden");
+ if(directMedia(u.href)){
+  box.innerHTML="<strong>Direct media link detected</strong>Trying to retrieve the file from its host…";
+  try{const r=await fetch(u.href,{mode:"cors"});if(!r.ok)throw Error("Host returned "+r.status);const blob=await r.blob();if(!blob.type.startsWith("image/")&&!blob.type.startsWith("video/")&&!blob.type.startsWith("audio/"))throw Error("Not a recognized media file");const ext=(u.pathname.split(".").pop()||"media").split("?")[0];saveBlob(blob,"spool-download."+ext);box.innerHTML="<strong>Your download is ready.</strong>The media file was retrieved from the direct link.";toast("Download started.")}catch(err){box.innerHTML="<strong>The host blocked browser downloading.</strong>This link may require permission or may not allow cross-origin file access. Open the original source and use its download option if available.<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open media link ↗</a>"}return;
+ }
+ const platform=platformFor(u.href);
+ if(!platform){box.innerHTML="<strong>Unsupported link</strong>Paste a public TikTok, Instagram, or X post URL, or a direct media-file URL.";return}
+ if(platform==="Direct"){box.innerHTML="<strong>Direct media link</strong>That URL does not look like a supported file extension. Try the direct file URL.";return}
+ const submit=$("linkForm").querySelector('button[type="submit"]');
+ submit.disabled=true;submit.textContent="Finding media…";
+ box.innerHTML='<div class="link-loading"><span class="loading-dot"></span><strong>Connecting to '+esc(platform)+'…</strong><small>Checking this public post for available media.</small></div>';
+ try{
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),35000);
+  let response;
+  try{response=await fetch("/.netlify/functions/parse-media",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u.href}),signal:controller.signal})}finally{clearTimeout(timeout)}
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(result.error||result.message||("Downloader service returned "+response.status));
+  renderSocialMedia(result,platform,u.href);toast("Media options are ready.");
+ }catch(err){
+  console.error("Spool link downloader:",err);
+  let message=err.name==="AbortError"?"The request took too long. Try again in a moment.":(err.message||"Could not retrieve this post.");
+  if(/EASYDOWN_API_TOKEN|not configured|server setup/i.test(message))message="The downloader service is not configured yet. Add EASYDOWN_API_TOKEN in Netlify → Site configuration → Environment variables, then redeploy.";
+  box.innerHTML="<strong>Couldn’t retrieve this post.</strong>"+esc(message)+"<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open original post ↗</a>";
+ }finally{submit.disabled=false;submit.innerHTML='Continue <b>↗</b>'}
+};
 let videoFile=null,ffmpeg=null,ffmpegLoading=null,mp3Url=null;
 $("videoInput").onchange=e=>{const f=e.target.files[0];if(!f)return;if(!f.type.startsWith("video/")&&!/\\.(mp4|mov|m4v|webm|avi|mkv)$/i.test(f.name)){toast("Choose a video file.");return}loadVideo(f);e.target.value=""};
 function loadVideo(f){videoFile=f;if(videoUrl)URL.revokeObjectURL(videoUrl);videoUrl=URL.createObjectURL(f);$("videoPreview").src=videoUrl;$("videoName").textContent=f.name;$("videoInfo").textContent=(f.size/1048576).toFixed(1)+" MB · "+(f.type||"Video");$("extractWork").classList.remove("hidden");$("audioDownload").classList.add("hidden");if(mp3Url){URL.revokeObjectURL(mp3Url);mp3Url=null}$("extractProgress").classList.add("hidden");$("extractBtn").disabled=false;$("extractBtn").textContent="Convert to MP3 ↗";$("extractStatus").textContent="Your audio will be encoded as a genuine MP3 file.";const errorBox=$("extractError");if(errorBox){errorBox.classList.add("hidden");errorBox.textContent=""}}
