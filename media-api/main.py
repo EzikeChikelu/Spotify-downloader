@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -11,7 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-app = FastAPI(title="Spool Free Media API", version="1.0.0")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("spool.media")
+
+app = FastAPI(title="Spool Free Media API", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,7 +52,11 @@ def health():
 def info(request: Request, url: str = Query(..., max_length=2048)):
     validate_url(url)
     try:
-        with yt_dlp.YoutubeDL(base_options()) as ydl:
+        options = base_options()
+        host = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url).hostname or ""
+        if host == "instagram.com" or host.endswith(".instagram.com") or host == "tiktok.com" or host.endswith(".tiktok.com"):
+            options["impersonate"] = "chrome"
+        with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info:
             raise HTTPException(status_code=404, detail="No media was found for this post.")
@@ -73,9 +81,17 @@ def info(request: Request, url: str = Query(..., max_length=2048)):
         raise
     except Exception as exc:
         message = str(exc)
-        if "login" in message.lower() or "private" in message.lower():
-            raise HTTPException(status_code=403, detail="This post is private or requires login. Only public posts can be downloaded.")
-        raise HTTPException(status_code=422, detail="yt-dlp could not access this post. It may be private, restricted, deleted, or unsupported.")
+        lower = message.lower()
+        logger.exception("Media extraction failed for host %s (%s)", host if "host" in locals() else "unknown", type(exc).__name__)
+        if "curl_cffi" in lower or "impersonate target" in lower:
+            detail = "Browser impersonation is unavailable on the server. The service is being updated; try again shortly."
+        elif "login" in lower or "private" in lower or "cookies" in lower or "empty media response" in lower:
+            detail = "This post is not accessible to the downloader without a login, or the platform is withholding its media. Try a different public post."
+        elif "403" in lower or "429" in lower or "blocked" in lower or "rate" in lower:
+            detail = "The platform temporarily blocked this server request. Wait a little and try again."
+        else:
+            detail = "The platform did not provide downloadable media. The post may be restricted, unavailable, or unsupported."
+        raise HTTPException(status_code=422, detail=detail)
 
 @app.get("/download")
 def download(url: str = Query(..., max_length=2048), kind: str = Query("video", pattern="^(video|audio|best)$")):
