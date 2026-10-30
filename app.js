@@ -50,7 +50,7 @@ $("linkForm").onsubmit=async e=>{
  submit.disabled=true;submit.textContent="Finding media…";
  box.innerHTML='<div class="link-loading"><span class="loading-dot"></span><strong>Connecting to '+esc(platform)+'…</strong><small>Checking this public post for available media.</small></div>';
  try{
-  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),35000);
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),180000);
   let response;
   try{response=await fetch("https://spool-media-api-ezikechikelu.onrender.com/info?url="+encodeURIComponent(u.href),{headers:{"Accept":"application/json"},signal:controller.signal})}finally{clearTimeout(timeout)}
   const result=await response.json().catch(()=>({}));
