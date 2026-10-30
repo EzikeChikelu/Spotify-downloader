@@ -52,14 +52,14 @@ $("linkForm").onsubmit=async e=>{
  try{
   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),35000);
   let response;
-  try{response=await fetch("/.netlify/functions/parse-media",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u.href}),signal:controller.signal})}finally{clearTimeout(timeout)}
+  try{response=await fetch("https://spool-media-api-ezikechikelu.onrender.com/info?url="+encodeURIComponent(u.href),{headers:{"Accept":"application/json"},signal:controller.signal})}finally{clearTimeout(timeout)}
   const result=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(result.error||result.message||("Downloader service returned "+response.status));
   renderSocialMedia(result,platform,u.href);toast("Media options are ready.");
  }catch(err){
   console.error("Spool link downloader:",err);
   let message=err.name==="AbortError"?"The request took too long. Try again in a moment.":(err.message||"Could not retrieve this post.");
-  if(/YTDLP_API_URL|not configured|server setup/i.test(message))message="The free downloader backend is not connected yet. Deploy the Render service and add YTDLP_API_URL in Netlify environment variables, then redeploy.";
+  if(/Failed to fetch|NetworkError/i.test(message))message="Could not reach the free downloader. It may still be starting up; try again shortly.";
   box.innerHTML="<strong>Couldn’t retrieve this post.</strong>"+esc(message)+"<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open original post ↗</a>";
  }finally{submit.disabled=false;submit.innerHTML='Continue <b>↗</b>'}
 };
