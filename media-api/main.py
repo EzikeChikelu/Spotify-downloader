@@ -99,6 +99,9 @@ def download(url: str = Query(..., max_length=2048), kind: str = Query("video", 
     temp_dir = tempfile.mkdtemp(prefix="spool-")
     output = str(Path(temp_dir) / "%(title).80s-%(id)s.%(ext)s")
     opts = base_options()
+    host = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url).hostname or ""
+    if host == "instagram.com" or host.endswith(".instagram.com") or host == "tiktok.com" or host.endswith(".tiktok.com"):
+        opts["impersonate"] = "chrome"
     opts.update({
         "outtmpl": output,
         "format": "bestaudio/best" if kind == "audio" else ("best[ext=mp4]/best" if kind in ("video", "best") else "best"),
@@ -117,5 +120,6 @@ def download(url: str = Query(..., max_length=2048), kind: str = Query("video", 
         return FileResponse(filepath, filename=safe_name, background=BackgroundTask(shutil.rmtree, temp_dir, ignore_errors=True), media_type="application/octet-stream")
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(status_code=422, detail="Download failed. The post may be restricted, unavailable, or unsupported.")
+    except Exception as exc:
+        logger.exception("Media download failed for host %s (%s)", host, type(exc).__name__)
+        raise HTTPException(status_code=422, detail="The platform could not provide this file. The post may be restricted, unavailable, or temporarily blocked.")
