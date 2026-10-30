@@ -104,9 +104,16 @@ export default function App() {
     } catch (error) { setLinkError(error instanceof Error ? error.name === "AbortError" ? "The request timed out. Try again in a moment." : error.message : "Could not retrieve this post."); }
     finally { window.clearTimeout(timer); setLinkLoading(false); }
   }
-  async function downloadFile(fileUrl: string, filename: string) {
-    try { const response = await fetch(fileUrl); if (!response.ok) throw new Error("Download failed (" + response.status + ")."); const blob = await response.blob(); const objectUrl = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = objectUrl; anchor.download = filename; anchor.click(); URL.revokeObjectURL(objectUrl); }
-    catch { window.open(fileUrl, "_blank", "noopener,noreferrer"); }
+  function downloadFile(fileUrl: string, filename: string) {
+    // The API responds with Content-Disposition: attachment, so let the browser
+    // stream the file directly instead of buffering the entire video in memory.
+    const anchor = document.createElement("a");
+    anchor.href = fileUrl;
+    anchor.rel = "noopener";
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
   }
   async function convertVideo() {
     if (!video || converting) return;
