@@ -10,7 +10,7 @@ function base64url(bytes){return btoa(String.fromCharCode(...bytes)).replace(/\+
 function randomString(length=64){const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";const bytes=crypto.getRandomValues(new Uint8Array(length));return Array.from(bytes,b=>chars[b%chars.length]).join("");}
 async function sha256(text){return await crypto.subtle.digest("SHA-256",new TextEncoder().encode(text));}
 function getClientId(){return localStorage.getItem(CLIENT_KEY)||"";}
-function getRedirect(){return localStorage.getItem(REDIRECT_KEY)||location.origin+location.pathname;}
+function getRedirect(){return location.origin+location.pathname;}
 async function connectSpotify(){
  let clientId=getClientId();
  if(!clientId){clientId=prompt("Enter your Spotify Developer app Client ID (not your password):");if(!clientId)return;localStorage.setItem(CLIENT_KEY,clientId.trim());}
@@ -18,7 +18,8 @@ async function connectSpotify(){
  if(!localStorage.getItem(REDIRECT_KEY))localStorage.setItem(REDIRECT_KEY,redirect);
  const verifier=randomString(64);sessionStorage.setItem("spool_verifier",verifier);
  const challenge=base64url(new Uint8Array(await sha256(verifier)));
- const params=new URLSearchParams({client_id:clientId,response_type:"code",redirect_uri:redirect,code_challenge_method:"S256",code_challenge:challenge,scope:"playlist-read-private playlist-read-collaborative"});
+ const oauthState=randomString(32);sessionStorage.setItem("spool_oauth_state",oauthState);
+ const params=new URLSearchParams({client_id:clientId,response_type:"code",redirect_uri:redirect,code_challenge_method:"S256",code_challenge:challenge,state:oauthState,scope:"playlist-read-private playlist-read-collaborative"});
  location.href="https://accounts.spotify.com/authorize?"+params.toString();
 }
 async function spotify(path,options={}){
@@ -28,9 +29,11 @@ async function spotify(path,options={}){
  return response.json();
 }
 async function handleCallback(){
- const params=new URLSearchParams(location.search),code=params.get("code"),error=params.get("error");
- if(error){history.replaceState({}, "", location.pathname);toast("Spotify sign-in was cancelled.");return;}
+ const params=new URLSearchParams(location.search),code=params.get("code"),error=params.get("error"),returnedState=params.get("state"),expectedState=sessionStorage.getItem("spool_oauth_state");
+ if(error){sessionStorage.removeItem("spool_oauth_state");history.replaceState({}, "", location.pathname);toast("Spotify sign-in was cancelled.");return;}
  if(!code)return;
+ if(!returnedState||returnedState!==expectedState){history.replaceState({}, "", location.pathname);sessionStorage.removeItem("spool_oauth_state");toast("Sign-in verification failed. Please connect again.");return;}
+ sessionStorage.removeItem("spool_oauth_state");
  const verifier=sessionStorage.getItem("spool_verifier"),clientId=getClientId();
  try{
   const response=await fetch("https://accounts.spotify.com/api/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:clientId,grant_type:"authorization_code",code,redirect_uri:getRedirect(),code_verifier:verifier})});
@@ -46,14 +49,14 @@ async function loadPlaylists(){
  }catch(err){$("panelSubtitle").textContent="Unable to load playlists";toast(err.message);}
 }
 function renderPlaylists(){
- $("playlistGrid").innerHTML=state.playlists.map(p=>{const img=p.images?.[0]?.url;return `<button class="playlist-card" data-playlist="${escapeHTML(p.id)}">${img?`<img src="${escapeHTML(img)}" alt="">`:'<div class="playlist-placeholder">♫</div>'}<b>${escapeHTML(p.name)}</b><small>${p.tracks?.total??0} tracks</small></button>`;}).join("")||"<p>No playlists found on this account.</p>";
+ $("playlistGrid").innerHTML=state.playlists.map(p=>{const img=p.images?.[0]?.url;return `<button class="playlist-card" data-playlist="${escapeHTML(p.id)}">${img?`<img src="${escapeHTML(img)}" alt="">`:'<div class="playlist-placeholder">♫</div>'}<b>${escapeHTML(p.name)}</b><small>${p.items?.total??p.tracks?.total??0} tracks</small></button>`;}).join("")||"<p>No playlists found on this account.</p>";
  document.querySelectorAll("[data-playlist]").forEach(btn=>btn.addEventListener("click",()=>selectPlaylist(btn.dataset.playlist)));
 }
 async function selectPlaylist(id){
  const p=state.playlists.find(x=>x.id===id);if(!p)return;state.selected=p;state.tracks=[];$("trackArea").classList.remove("hidden");$("selectedPlaylist").textContent=p.name;$("trackMeta").textContent="Loading tracks…";$("trackList").innerHTML="";
- try{let url=`/playlists/${encodeURIComponent(id)}/tracks?limit=100&fields=items(track(name,artists(name),album(name,images),duration_ms,external_urls)),next,total`;
-  while(url){const data=await spotify(url);state.tracks.push(...data.items.map(x=>x.track).filter(Boolean));url=data.next?data.next.replace("https://api.spotify.com/v1",""):null;}
-  $("trackMeta").textContent=state.tracks.length+" tracks · Playlist details only";$("trackList").innerHTML=state.tracks.map((t,i)=>`<div class="track-row"><span class="num">${String(i+1).padStart(2,"0")}</span><div><b>${escapeHTML(t.name)}</b><small>${escapeHTML(t.artists?.map(a=>a.name).join(", ")||"Unknown artist")}</small></div><time>${formatTime(t.duration_ms)}</time></div>`).join("");
+ try{let url=`/playlists/${encodeURIComponent(id)}/items?limit=50&fields=items(item(name,artists(name),album(name,images),duration_ms,external_urls,type,is_local)),next,total`;
+  while(url){const data=await spotify(url);state.tracks.push(...data.items.map(x=>x.item??x.track).filter(Boolean));url=data.next?data.next.replace("https://api.spotify.com/v1",""):null;}
+  $("trackMeta").textContent=state.tracks.length+" tracks · Playlist details only";$("trackList").innerHTML=state.tracks.map((t,i)=>`<div class="track-row"><span class="num">${String(i+1).padStart(2,"0")}</span><div><b>${escapeHTML(t.name)}</b><small>${escapeHTML(t.artists?.map(a=>a.name).join(", ")||"Unknown artist")} · <a href="${escapeHTML(t.external_urls?.spotify||"https://open.spotify.com/")}" target="_blank" rel="noopener noreferrer">Listen on Spotify ↗</a></small></div><time>${formatTime(t.duration_ms)}</time></div>`).join("");
   $("trackArea").scrollIntoView({behavior:"smooth",block:"nearest"});
  }catch(err){$("trackMeta").textContent=err.message;toast(err.message);}
 }
