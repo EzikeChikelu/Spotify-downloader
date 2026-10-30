@@ -21,18 +21,18 @@ function platformFor(url){
 function directMedia(url){return /\.(mp4|m4v|webm|mov|mp3|m4a|wav|ogg|aac|jpg|jpeg|png|gif|webp)(?:$|[?#])/i.test(new URL(url).pathname+new URL(url).search)}
 function safeMediaUrl(value){try{const u=new URL(value);return ["http:","https:"].includes(u.protocol)?u.href:null}catch{return null}}
 function renderSocialMedia(payload,platform,originalUrl){
- const d=payload?.data||payload?.result?.data||payload?.data?.data;
- if(!d)throw new Error(payload?.msg||payload?.message||"The service returned no media for this post.");
+ const d=payload?.data||payload?.result?.data;
+ if(!d)throw new Error(payload?.msg||payload?.message||"The downloader returned no media for this post.");
  const videos=Array.isArray(d.videos)?d.videos:[];
  const images=Array.isArray(d.images)?d.images:[];
  const audios=Array.isArray(d.audios)?d.audios:[];
  const title=esc(d.title||platform+" post");
  const thumb=safeMediaUrl(d.thumbnail);
- const candidates=[...videos.map((v,n)=>({kind:"Video",url:safeMediaUrl(v.url),quality:v.quality||v.mimeType||"Video",mime:v.mimeType||"",n})),...audios.map((v,n)=>({kind:"Audio",url:safeMediaUrl(v.url),quality:v.quality||v.mimeType||"Audio",mime:v.mimeType||"",n})),...images.map((v,n)=>({kind:"Image",url:safeMediaUrl(v.url),quality:(v.width&&v.height)?v.width+" × "+v.height:"Image",mime:"",n}))].filter(x=>x.url);
- if(!candidates.length)throw new Error("The post was found, but the service did not return a downloadable media file. It may be private, restricted, or unsupported.");
+ const candidates=[...videos.map(v=>({kind:"Video",url:safeMediaUrl(v.url),quality:v.quality||"Best available"})),...audios.map(v=>({kind:"Audio",url:safeMediaUrl(v.url),quality:v.quality||"Audio"})),...images.map(v=>({kind:"Image",url:safeMediaUrl(v.url),quality:v.quality||"Image"}))].filter(x=>x.url);
+ if(!candidates.length)throw new Error("No downloadable media was found. This post may be private, restricted, or unsupported.");
  const preview=thumb?'<img class="social-thumb" src="'+esc(thumb)+'" alt="" loading="lazy">':"";
- const options=candidates.map((m,n)=>'<a class="media-option" href="'+esc(m.url)+'" target="_blank" rel="noopener noreferrer" aria-label="Open '+esc(m.kind)+' '+esc(m.quality)+'"><span class="media-kind">'+esc(m.kind)+'</span><span class="media-quality">'+esc(m.quality)+'</span><span class="media-download">Open / save ↗</span></a>').join("");
- $("linkResult").innerHTML='<div class="social-result-head">'+preview+'<div><span class="result-platform">'+esc(platform)+' · PUBLIC POST</span><strong>'+title+'</strong><small>'+(Number(d.duration)>0?"Duration "+fmt(d.duration):candidates.length+" media option(s)")+'</small></div></div><div class="media-options">'+options+'</div><p class="media-hint">Choose a media option. It opens the source file in a new tab; use your browser’s download or Save option to store it on your phone. Links may expire. Only save content you have permission to use.</p><a class="original-post" href="'+esc(originalUrl)+'" target="_blank" rel="noopener noreferrer">Open original post ↗</a>';
+ const options=candidates.map(m=>'<a class="media-option" href="'+esc(m.url)+'" target="_blank" rel="noopener noreferrer"><span class="media-kind">'+esc(m.kind)+'</span><span class="media-quality">'+esc(m.quality)+'</span><span class="media-download">Download ↗</span></a>').join("");
+ $("linkResult").innerHTML='<div class="social-result-head">'+preview+'<div><span class="result-platform">'+esc(platform)+' · PUBLIC POST</span><strong>'+title+'</strong><small>'+(Number(d.duration)>0?"Duration "+fmt(d.duration):candidates.length+" download option(s)")+'</small></div></div><div class="media-options">'+options+'</div><p class="media-hint">Choose a format to download through Spool. Only download content you own or have permission to save.</p><a class="original-post" href="'+esc(originalUrl)+'" target="_blank" rel="noopener noreferrer">Open original post ↗</a>';
 }
 $("linkForm").onsubmit=async e=>{
  e.preventDefault();
@@ -59,7 +59,7 @@ $("linkForm").onsubmit=async e=>{
  }catch(err){
   console.error("Spool link downloader:",err);
   let message=err.name==="AbortError"?"The request took too long. Try again in a moment.":(err.message||"Could not retrieve this post.");
-  if(/EASYDOWN_API_TOKEN|not configured|server setup/i.test(message))message="The downloader service is not configured yet. Add EASYDOWN_API_TOKEN in Netlify → Site configuration → Environment variables, then redeploy.";
+  if(/YTDLP_API_URL|not configured|server setup/i.test(message))message="The free downloader backend is not connected yet. Deploy the Render service and add YTDLP_API_URL in Netlify environment variables, then redeploy.";
   box.innerHTML="<strong>Couldn’t retrieve this post.</strong>"+esc(message)+"<br><a href='"+esc(u.href)+"' target='_blank' rel='noopener noreferrer'>Open original post ↗</a>";
  }finally{submit.disabled=false;submit.innerHTML='Continue <b>↗</b>'}
 };
