@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
@@ -8,6 +9,7 @@ import yt_dlp
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 app = FastAPI(title="Spool Free Media API", version="1.0.0")
 app.add_middleware(
@@ -96,7 +98,7 @@ def download(url: str = Query(..., max_length=2048), kind: str = Query("video", 
                     raise RuntimeError("Download output was not created.")
                 filepath = matches[0]
         safe_name = re.sub(r"[^A-Za-z0-9._ -]", "_", filepath.name)[:120] or "spool-media"
-        return FileResponse(filepath, filename=safe_name, background=None, media_type="application/octet-stream")
+        return FileResponse(filepath, filename=safe_name, background=BackgroundTask(shutil.rmtree, temp_dir, ignore_errors=True), media_type="application/octet-stream")
     except HTTPException:
         raise
     except Exception:
