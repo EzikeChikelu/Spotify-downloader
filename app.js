@@ -1,110 +1,24 @@
-const CLIENT_KEY = "spool-spotify-client-id";
-const REDIRECT_KEY = "spool-spotify-redirect";
-const TOKEN_KEY = "spool-spotify-token";
-const $ = (id) => document.getElementById(id);
-const state = { token: null, playlists: [], selected: null, tracks: [], selectedTrackIds: new Set(), audio: [], view: "playlists" };
-const AUDIO_DB = "spool-local-audio";
-function openAudioDB(){return new Promise((resolve,reject)=>{const request=indexedDB.open(AUDIO_DB,1);request.onupgradeneeded=()=>request.result.createObjectStore("files",{keyPath:"id"});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
-async function audioDB(action,value){const db=await openAudioDB();return new Promise((resolve,reject)=>{const tx=db.transaction("files",action==="getAll"?"readonly":"readwrite");const store=tx.objectStore("files");const request=action==="getAll"?store.getAll():action==="put"?store.put(value):store.delete(value);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);tx.oncomplete=()=>db.close();tx.onerror=()=>{db.close();reject(tx.error);};});}
-async function restoreAudio(){try{state.audio=await audioDB("getAll");$("audioCount").textContent=state.audio.length;renderAudio();}catch(err){console.warn("Local audio storage unavailable",err);}}
-const toast = (message) => { const el=$("toast"); el.textContent=message; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),2600); };
-const escapeHTML = (value="") => String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const spotifyId = (value) => { const match=String(value).match(/(?:playlist\/|spotify:playlist:)([a-zA-Z0-9]+)/); return match?match[1]:null; };
-function base64url(bytes){return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");}
-function randomString(length=64){const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";const bytes=crypto.getRandomValues(new Uint8Array(length));return Array.from(bytes,b=>chars[b%chars.length]).join("");}
-async function sha256(text){return await crypto.subtle.digest("SHA-256",new TextEncoder().encode(text));}
-function getClientId(){return localStorage.getItem(CLIENT_KEY)||"";}
-function getRedirect(){return location.origin+location.pathname;}
-async function connectSpotify(){
- let clientId=getClientId();
- if(!clientId){clientId=prompt("Enter your Spotify Developer app Client ID (not your password):");if(!clientId)return;localStorage.setItem(CLIENT_KEY,clientId.trim());}
- const redirect=getRedirect();
- if(!localStorage.getItem(REDIRECT_KEY))localStorage.setItem(REDIRECT_KEY,redirect);
- const verifier=randomString(64);sessionStorage.setItem("spool_verifier",verifier);
- const challenge=base64url(new Uint8Array(await sha256(verifier)));
- const oauthState=randomString(32);sessionStorage.setItem("spool_oauth_state",oauthState);
- const params=new URLSearchParams({client_id:clientId,response_type:"code",redirect_uri:redirect,code_challenge_method:"S256",code_challenge:challenge,state:oauthState,scope:"playlist-read-private playlist-read-collaborative"});
- location.href="https://accounts.spotify.com/authorize?"+params.toString();
-}
-async function spotify(path,options={}){
- const response=await fetch("https://api.spotify.com/v1"+path,{...options,headers:{Authorization:"Bearer "+state.token,"Content-Type":"application/json",...(options.headers||{})}});
- if(response.status===401){state.token=null;sessionStorage.removeItem(TOKEN_KEY);throw new Error("Spotify session expired. Please connect again.");}
- if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error?.message||"Spotify request failed ("+response.status+")");}
- return response.json();
-}
-async function handleCallback(){
- const params=new URLSearchParams(location.search),code=params.get("code"),error=params.get("error"),returnedState=params.get("state"),expectedState=sessionStorage.getItem("spool_oauth_state");
- if(error){sessionStorage.removeItem("spool_oauth_state");history.replaceState({}, "", location.pathname);toast("Spotify sign-in was cancelled.");return;}
- if(!code)return;
- if(!returnedState||returnedState!==expectedState){history.replaceState({}, "", location.pathname);sessionStorage.removeItem("spool_oauth_state");toast("Sign-in verification failed. Please connect again.");return;}
- sessionStorage.removeItem("spool_oauth_state");
- const verifier=sessionStorage.getItem("spool_verifier"),clientId=getClientId();
- try{
-  const response=await fetch("https://accounts.spotify.com/api/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:clientId,grant_type:"authorization_code",code,redirect_uri:getRedirect(),code_verifier:verifier})});
-  const data=await response.json();if(!response.ok)throw new Error(data.error_description||"Could not complete Spotify sign-in.");
-  state.token=data.access_token;sessionStorage.setItem(TOKEN_KEY,state.token);history.replaceState({}, "", location.pathname);await loadPlaylists();
- }catch(err){history.replaceState({}, "", location.pathname);toast(err.message);}
-}
-async function loadPlaylists(){
- try{ $("connectState").classList.add("hidden");$("playlistView").classList.remove("hidden");$("panelSubtitle").textContent="Loading your Spotify library…";
-  let url="/me/playlists?limit=50";state.playlists=[];
-  while(url){const data=await spotify(url.replace("https://api.spotify.com/v1",""));state.playlists.push(...data.items);url=data.next;}
-  renderPlaylists();$("panelSubtitle").textContent=state.playlists.length+" playlists in your library";$("playlistCount").textContent=state.playlists.length;toast("Your playlists are ready.");
- }catch(err){$("panelSubtitle").textContent="Unable to load playlists";toast(err.message);}
-}
-function renderPlaylists(){
- $("playlistGrid").innerHTML=state.playlists.filter(p=>p.name.toLowerCase().includes(($("playlistSearch")?.value||"").toLowerCase())).map(p=>{const img=p.images?.[0]?.url;return `<button class="playlist-card" data-playlist="${escapeHTML(p.id)}">${img?`<img src="${escapeHTML(img)}" alt="">`:'<div class="playlist-placeholder">♫</div>'}<b>${escapeHTML(p.name)}</b><small>${p.items?.total??p.tracks?.total??0} tracks</small></button>`;}).join("")||"<p>No playlists found on this account.</p>";
- document.querySelectorAll("[data-playlist]").forEach(btn=>btn.addEventListener("click",()=>selectPlaylist(btn.dataset.playlist)));
-}
-async function selectPlaylist(id){
- const p=state.playlists.find(x=>x.id===id);if(!p)return;state.selected=p;state.tracks=[];state.selectedTrackIds.clear();$("trackArea").classList.remove("hidden");$("selectedPlaylist").textContent=p.name;$("trackMeta").textContent="Loading tracks…";$("trackList").innerHTML="";
- try{let url=`/playlists/${encodeURIComponent(id)}/items?limit=50&fields=items(item(name,artists(name),album(name,images),duration_ms,external_urls,type,is_local)),next,total`;
-  while(url){const data=await spotify(url);state.tracks.push(...data.items.map(x=>x.item??x.track).filter(Boolean));url=data.next?data.next.replace("https://api.spotify.com/v1",""):null;}
-  $("trackMeta").textContent=state.tracks.length+" tracks · Playlist details only";$("trackList").innerHTML=state.tracks.map((t,i)=>`<label class="track-row"><input class="track-select" type="checkbox" data-track="${i}" aria-label="Select track" ${state.selectedTrackIds.has(i)?"checked":""}><span class="num">${String(i+1).padStart(2,"0")}</span><div><b>${escapeHTML(t.name)}</b><small>${escapeHTML(t.artists?.map(a=>a.name).join(", ")||"Unknown artist")} · <a href="${escapeHTML(t.external_urls?.spotify||"https://open.spotify.com/")}" target="_blank" rel="noopener noreferrer">Listen on Spotify ↗</a></small></div><time>${formatTime(t.duration_ms)}</time></label>`).join("");
-  $("trackArea").scrollIntoView({behavior:"smooth",block:"nearest"});
- }catch(err){const message=String(err.message||"");const friendly=/403|forbidden|insufficient/i.test(message)?"Spotify only exposes the full item list for playlists you own or collaborate on. Try one of your own playlists.":message;$("trackMeta").textContent=friendly;toast(friendly);}
-}
-function exportTracks(){return state.selectedTrackIds.size?[...state.selectedTrackIds].sort((a,b)=>a-b).map(i=>state.tracks[i]).filter(Boolean):state.tracks;}
-function formatTime(ms=0){const s=Math.floor(ms/1000);return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
-function downloadBlob(content,name,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-function safeName(name){return String(name||"playlist").replace(/[\\/:*?"<>|]/g,"-").slice(0,90);}
-function exportCSV(){const rows=[["Track","Artist","Album","Duration","Spotify URL"],...exportTracks().map(t=>[t.name,t.artists?.map(a=>a.name).join(", "),t.album?.name,formatTime(t.duration_ms),t.external_urls?.spotify||""])];downloadBlob("\ufeff"+rows.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\r\n"),safeName(state.selected?.name)+".csv","text/csv;charset=utf-8");}
-function exportJSON(){downloadBlob(JSON.stringify({playlist:state.selected?.name,exportedAt:new Date().toISOString(),tracks:exportTracks().map(t=>({title:t.name,artists:t.artists?.map(a=>a.name),album:t.album?.name,durationMs:t.duration_ms,url:t.external_urls?.spotify}))},null,2),safeName(state.selected?.name)+".json","application/json");}
-function exportM3U(){const lines=["#EXTM3U",...exportTracks().flatMap(t=>["#EXTINF:"+Math.floor((t.duration_ms||0)/1000)+","+(t.artists?.map(a=>a.name).join(", ")||"")+" - "+t.name,t.external_urls?.spotify||""])];downloadBlob(lines.join("\n"),safeName(state.selected?.name)+".m3u","audio/x-mpegurl");}
-function switchView(view){state.view=view;document.querySelectorAll(".side-link").forEach(b=>b.classList.toggle("active",b.dataset.view===view));$("playlistView").classList.toggle("hidden",view!=="playlists");$("connectState").classList.toggle("hidden",view!=="playlists"||!!state.token);$("audioView").classList.toggle("hidden",view!=="audio");$("panelTitle").textContent=view==="playlists"?"Spotify playlists":"My audio files";$("panelSubtitle").textContent=view==="playlists"?(state.token?"Your connected library":"Connect your account to get started"):"Audio saved on this device";if(view==="audio")renderAudio();}
-async function addAudio(files){
- let added=0;
- for(const file of files){
-  if(!file.type.startsWith("audio/"))continue;
-  const item={id:crypto.randomUUID(),name:file.name,type:file.type,size:file.size,file:file};
-  try{await audioDB("put",item);state.audio.push(item);added++;}
-  catch(err){toast("Could not save file. Device storage may be full.");break;}
- }
- $("audioCount").textContent=state.audio.length;renderAudio();
- if(added)toast(added+" audio file(s) saved on this device.");
-}
-function renderAudio(){
- const list=$("audioList");list.innerHTML="";
- if(!state.audio.length){const empty=document.createElement("p");empty.className="empty-note";empty.textContent="Your personal audio library is empty.";list.appendChild(empty);return;}
- state.audio.forEach(item=>{
-  const row=document.createElement("div");row.className="audio-item";
-  const icon=document.createElement("span");icon.className="audio-icon";icon.textContent="♫";row.appendChild(icon);
-  const info=document.createElement("div");info.className="audio-info";
-  const name=document.createElement("b");name.textContent=item.name;info.appendChild(name);
-  const meta=document.createElement("small");meta.textContent=(item.size/1048576).toFixed(1)+" MB · Saved in this browser";info.appendChild(meta);row.appendChild(info);
-  const save=document.createElement("button");save.className="download-btn";save.textContent="↓ Save";save.addEventListener("click",()=>{const url=URL.createObjectURL(item.file),a=document.createElement("a");a.href=url;a.download=item.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);});row.appendChild(save);
-  const remove=document.createElement("button");remove.className="download-btn";remove.textContent="×";remove.setAttribute("aria-label","Remove "+item.name);remove.addEventListener("click",async()=>{await audioDB("delete",item.id);state.audio=state.audio.filter(x=>x.id!==item.id);$("audioCount").textContent=state.audio.length;renderAudio();toast("Audio removed from this browser.");});row.appendChild(remove);
-  list.appendChild(row);
- });
-}
-$("connectTop").addEventListener("click",connectSpotify);$("connectHero").addEventListener("click",connectSpotify);$("connectPanel").addEventListener("click",connectSpotify);
-$("refreshBtn").addEventListener("click",()=>state.token?loadPlaylists():connectSpotify());
-$("themeToggle").addEventListener("click",()=>{document.body.classList.toggle("light");localStorage.setItem("spool-theme",document.body.classList.contains("light")?"light":"dark");});
-document.querySelectorAll(".side-link").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
-$("playlistSearch").addEventListener("input",renderPlaylists);
-$("trackList").addEventListener("change",e=>{const box=e.target.closest("[data-track]");if(!box)return;const i=Number(box.dataset.track);if(box.checked)state.selectedTrackIds.add(i);else state.selectedTrackIds.delete(i);$("trackMeta").textContent=state.selectedTrackIds.size+" selected · "+state.tracks.length+" tracks";});
-$("csvBtn").addEventListener("click",exportCSV);$("jsonBtn").addEventListener("click",exportJSON);$("m3uBtn").addEventListener("click",exportM3U);
-$("audioInput").addEventListener("change",e=>{addAudio([...e.target.files]);e.target.value="";});
-const drop=$("dropZone");["dragenter","dragover"].forEach(evt=>drop.addEventListener(evt,e=>{e.preventDefault();drop.style.borderColor="var(--green)";}));["dragleave","drop"].forEach(evt=>drop.addEventListener(evt,e=>{e.preventDefault();drop.style.borderColor="";if(evt==="drop")addAudio([...e.dataTransfer.files]);}));
-if(localStorage.getItem("spool-theme")==="light")document.body.classList.add("light");
-(async()=>{await restoreAudio();const saved=sessionStorage.getItem(TOKEN_KEY);if(saved){state.token=saved;await loadPlaylists();}await handleCallback();})();
+const $=id=>document.getElementById(id);
+const DB="spool-local-audio";
+let db,tracks=[],playlists=[],queue=[],current=-1,objectUrl=null,shuffle=false;
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=n=>{n=Number(n)||0;return Math.floor(n/60)+":"+String(Math.floor(n%60)).padStart(2,"0")};
+function req(r){return new Promise((ok,no)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
+function tx(name,mode="readonly"){return db.transaction(name,mode).objectStore(name)}
+function toast(s){const e=$("toast");e.textContent=s;e.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove("show"),2500)}
+function save(blob,name){const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1500)}
+function track(id){return tracks.find(t=>t.id===id)}
+function stats(){$("statTracks").textContent=String(tracks.length).padStart(2,"0");$("statPlaylists").textContent=String(playlists.length).padStart(2,"0");$("statStorage").textContent=(tracks.reduce((n,t)=>n+(t.size||0),0)/1048576).toFixed(1)+" MB";$("trackCount").textContent=tracks.length;$("playlistCount").textContent=playlists.length}
+function rows(list){if(!list.length)return '<div class="empty-note">No music here yet. Import audio files to get started.</div>';return list.map((t,i)=>'<div class="track-row"><button class="row-play" data-play="'+t.id+'">▶</button><span class="num">'+(i+1)+'</span><div class="track-info"><b>'+esc(t.name)+'</b><small>'+esc(t.filename)+'</small></div><time>'+fmt(t.duration)+'</time><div class="row-actions"><button data-save="'+t.id+'" title="Save">↓</button><button data-add="'+t.id+'" title="Add to playlist">＋</button><button data-del="'+t.id+'" title="Remove">×</button></div></div>').join("")}
+function render(){stats();let list=[...tracks],q=$("searchInput").value.toLowerCase(),sort=$("sortSelect").value;if(sort==="title")list.sort((a,b)=>a.name.localeCompare(b.name));if(sort==="duration")list.sort((a,b)=>a.duration-b.duration);if(sort==="added")list.sort((a,b)=>b.addedAt-a.addedAt);list=list.filter(t=>(t.name+" "+t.filename).toLowerCase().includes(q));$("trackList").innerHTML=rows(list);$("recentList").innerHTML=rows([...tracks].sort((a,b)=>b.addedAt-a.addedAt).slice(0,25));$("playlistGrid").innerHTML=playlists.map(p=>'<article class="playlist-card"><div class="playlist-cover">♫</div><div class="playlist-card-info"><b>'+esc(p.name)+'</b><small>'+p.ids.length+' tracks</small></div><div class="playlist-card-actions"><button data-open="'+p.id+'">Open</button><button data-export="'+p.id+'">Export</button><button data-remove="'+p.id+'">×</button></div></article>').join("")||'<p class="empty-note">No playlists yet. Create one to get started.</p>';$("allView").classList.toggle("hidden",view!=="all");$("playlistView").classList.toggle("hidden",view!=="playlists");$("recentView").classList.toggle("hidden",view!=="recent");$("emptyState").classList.toggle("hidden",tracks.length>0||view==="playlists");$("panelTitle").textContent=view==="all"?"All tracks":view==="playlists"?"Your playlists":"Recently added";$("panelSubtitle").textContent=tracks.length+" tracks in your collection"}
+let view="all";
+async function importFiles(files){let added=0;for(const f of files){if(!f.type.startsWith("audio/")&&!/\.(mp3|m4a|wav|flac|ogg|aac|opus)$/i.test(f.name))continue;if(tracks.some(t=>t.filename===f.name&&t.size===f.size))continue;const duration=await new Promise(ok=>{const u=URL.createObjectURL(f),a=new Audio();a.onloadedmetadata=()=>{URL.revokeObjectURL(u);ok(a.duration||0)};a.onerror=()=>{URL.revokeObjectURL(u);ok(0)};a.src=u});const t={id:crypto.randomUUID(),name:f.name.replace(/\.[^.]+$/,""),filename:f.name,size:f.size,duration,addedAt:Date.now(),file:f};try{await req(tx("files","readwrite").put(t));tracks.unshift(t);added++}catch(e){toast("Browser storage is full.");break}}render();toast(added?added+" audio file(s) imported.":"No new supported audio files selected.")}
+function play(id,list){const t=track(id);if(!t)return;if(list)queue=list;else queue=tracks.map(x=>x.id);current=queue.indexOf(id);if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=URL.createObjectURL(t.file);$("audioPlayer").src=objectUrl;$("audioPlayer").play().then(()=>{$("player").classList.remove("hidden");$("nowTitle").textContent=t.name;$("nowArtist").textContent=t.filename}).catch(()=>toast("This audio format is not supported by your browser."))}
+function advance(dir=1){if(!queue.length)return;current=shuffle?Math.floor(Math.random()*queue.length):(current+dir+queue.length)%queue.length;play(queue[current],queue)}
+async function addToPlaylist(id){if(!playlists.length)return toast("Create a playlist first.");const n=prompt("Enter playlist number:\n"+playlists.map((p,i)=>(i+1)+". "+p.name).join("\n"));const p=playlists[Number(n)-1];if(!p)return;if(!p.ids.includes(id)){p.ids.push(id);await req(tx("playlists","readwrite").put(p));render();toast("Track added to "+p.name)}}
+function exportPlaylist(id){const p=playlists.find(x=>x.id===id);if(!p)return;const ts=p.ids.map(track).filter(Boolean);save(new Blob(["#EXTM3U\n"+ts.map(t=>"#EXTINF:"+Math.floor(t.duration)+","+t.name+"\n"+t.filename).join("\n")],{type:"audio/x-mpegurl"}),p.name+".m3u")}
+async function createPlaylist(){const name=$("playlistName").value.trim();if(!name)return toast("Enter a playlist name.");const p={id:crypto.randomUUID(),name,ids:[]};await req(tx("playlists","readwrite").put(p));playlists.push(p);$("modal").classList.add("hidden");switchView("playlists");toast("Playlist created.")}
+function switchView(v){view=v;document.querySelectorAll(".side-link").forEach(b=>b.classList.toggle("active",b.dataset.view===v));render()}
+function bind(){["importTop","importHero","importBtn","emptyImport"].forEach(id=>$(id).onclick=()=>$("audioInput").click());$("audioInput").onchange=e=>{importFiles([...e.target.files]);e.target.value=""};$("newPlaylistBtn").onclick=$("createPlaylistBtn").onclick=()=>$("modal").classList.remove("hidden");$("modalClose").onclick=$("cancelModal").onclick=()=>$("modal").classList.add("hidden");$("savePlaylist").onclick=createPlaylist;document.querySelectorAll(".side-link").forEach(b=>b.onclick=()=>switchView(b.dataset.view));$("searchInput").oninput=render;$("sortSelect").onchange=render;$("themeToggle").onclick=()=>{document.body.classList.toggle("light");localStorage.setItem("spool-theme",document.body.classList.contains("light")?"light":"dark")};document.addEventListener("click",async e=>{let b=e.target.closest("[data-play]");if(b)return play(b.dataset.play);b=e.target.closest("[data-save]");if(b){const t=track(b.dataset.save);if(t)save(t.file,t.filename);return}b=e.target.closest("[data-add]");if(b)return addToPlaylist(b.dataset.add);b=e.target.closest("[data-del]");if(b){if(confirm("Remove this audio from Spool?")){await req(tx("files","readwrite").delete(b.dataset.del));tracks=tracks.filter(t=>t.id!==b.dataset.del);render()}return}b=e.target.closest("[data-export]");if(b)return exportPlaylist(b.dataset.export);b=e.target.closest("[data-remove]");if(b){if(confirm("Delete this playlist?")){await req(tx("playlists","readwrite").delete(b.dataset.remove));playlists=playlists.filter(p=>p.id!==b.dataset.remove);render()}return}b=e.target.closest("[data-open]");if(b){const p=playlists.find(x=>x.id===b.dataset.open),ts=p.ids.map(track).filter(Boolean);$("panelTitle").textContent=p.name;$("panelSubtitle").textContent=ts.length+" tracks";$("playlistGrid").innerHTML='<div class="playlist-detail-head"><button class="outline-btn" id="backPlaylists">← Playlists</button><button class="outline-btn" id="playAll">▶ Play all</button><button class="outline-btn" id="exportCurrent">↓ M3U</button></div><div class="track-list">'+rows(ts)+'</div>';$("backPlaylists").onclick=()=>render();$("playAll").onclick=()=>ts[0]&&play(ts[0].id,ts.map(t=>t.id));$("exportCurrent").onclick=()=>exportPlaylist(p.id)}});$("playBtn").onclick=()=>{const a=$("audioPlayer");if(!a.src)return;if(a.paused)a.play();else a.pause()};$("nextBtn").onclick=()=>advance();$("prevBtn").onclick=()=>advance(-1);$("shuffleBtn").onclick=()=>{shuffle=!shuffle;$("shuffleBtn").classList.toggle("active",shuffle)};$("audioPlayer").onplay=()=>$("playBtn").textContent="Ⅱ";$("audioPlayer").onpause=()=>$("playBtn").textContent="▶";$("audioPlayer").onended=()=>advance();$("audioPlayer").ontimeupdate=()=>{const a=$("audioPlayer");$("progress").value=a.duration?a.currentTime/a.duration*100:0;$("currentTime").textContent=fmt(a.currentTime)};$("progress").oninput=e=>{const a=$("audioPlayer");if(a.duration)a.currentTime=a.duration*e.target.value/100};$("volume").oninput=e=>$("audioPlayer").volume=Number(e.target.value)}
+async function init(){try{db=await new Promise((ok,no)=>{const r=indexedDB.open(DB,2);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains("files"))r.result.createObjectStore("files",{keyPath:"id"});if(!r.result.objectStoreNames.contains("playlists"))r.result.createObjectStore("playlists",{keyPath:"id"})};r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});tracks=await req(tx("files").getAll());playlists=await req(tx("playlists").getAll())}catch(e){console.error(e);toast("Could not open browser storage.")}if(localStorage.getItem("spool-theme")==="light")document.body.classList.add("light");bind();render()}
+init();
