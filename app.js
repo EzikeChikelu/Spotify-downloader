@@ -54,7 +54,7 @@ $("linkForm").onsubmit=async e=>{
   let response;
   try{response=await fetch("https://spool-media-api-ezikechikelu.onrender.com/info?url="+encodeURIComponent(u.href),{headers:{"Accept":"application/json"},signal:controller.signal})}finally{clearTimeout(timeout)}
   const result=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(result.error||result.message||("Downloader service returned "+response.status));
+  if(!response.ok)throw new Error(result.detail||result.error||result.message||("Downloader service returned "+response.status));
   renderSocialMedia(result,platform,u.href);toast("Media options are ready.");
  }catch(err){
   console.error("Spool link downloader:",err);
