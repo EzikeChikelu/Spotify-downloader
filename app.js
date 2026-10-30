@@ -58,7 +58,7 @@ async function selectPlaylist(id){
   while(url){const data=await spotify(url);state.tracks.push(...data.items.map(x=>x.item??x.track).filter(Boolean));url=data.next?data.next.replace("https://api.spotify.com/v1",""):null;}
   $("trackMeta").textContent=state.tracks.length+" tracks · Playlist details only";$("trackList").innerHTML=state.tracks.map((t,i)=>`<div class="track-row"><span class="num">${String(i+1).padStart(2,"0")}</span><div><b>${escapeHTML(t.name)}</b><small>${escapeHTML(t.artists?.map(a=>a.name).join(", ")||"Unknown artist")} · <a href="${escapeHTML(t.external_urls?.spotify||"https://open.spotify.com/")}" target="_blank" rel="noopener noreferrer">Listen on Spotify ↗</a></small></div><time>${formatTime(t.duration_ms)}</time></div>`).join("");
   $("trackArea").scrollIntoView({behavior:"smooth",block:"nearest"});
- }catch(err){$("trackMeta").textContent=err.message;toast(err.message);}
+ }catch(err){const message=String(err.message||"");const friendly=/403|forbidden|insufficient/i.test(message)?"Spotify only exposes the full item list for playlists you own or collaborate on. Try one of your own playlists.":message;$("trackMeta").textContent=friendly;toast(friendly);}
 }
 function formatTime(ms=0){const s=Math.floor(ms/1000);return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
 function downloadBlob(content,name,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
