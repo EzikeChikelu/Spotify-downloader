@@ -128,7 +128,8 @@ export default function App() {
       if (result !== 0) throw new Error("Could not convert this video. Check that it contains an audio track.");
       const data = await ffmpeg.readFile(output);
       if (typeof data === "string" || !data.length) throw new Error("The MP3 output was empty.");
-      const blobUrl = URL.createObjectURL(new Blob([data], { type: "audio/mpeg" }));
+      const mp3Bytes = new Uint8Array(data);
+      const blobUrl = URL.createObjectURL(new Blob([mp3Bytes.buffer as ArrayBuffer], { type: "audio/mpeg" }));
       setConverted(blobUrl); setConvertedName(video.name.replace(/\.[^.]+$/, "") + ".mp3"); setConvertProgress(100); notify("Your MP3 is ready.");
       await ffmpeg.terminate();
     } catch (error) { setConvertError(error instanceof Error ? error.message : "Conversion failed. Please try again."); }
